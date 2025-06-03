@@ -2,10 +2,11 @@ package portal
 
 import (
 	"errors"
-	"github.com/gorilla/websocket"
-	"github.com/rs/zerolog/log"
 	"net/url"
 	"time"
+
+	"github.com/gorilla/websocket"
+	"github.com/rs/zerolog/log"
 )
 
 type MessageDecoder interface {
@@ -27,10 +28,36 @@ type DefaultWebSocketClient struct {
 }
 
 func (c *DefaultWebSocketClient) Shutdown() {
-	defer c.Conn.Close()
-	defer close(c.OutgoingMessages)
-	defer close(c.IncomingMessages)
+	log.Debug().Msg("shutting down WebSocket client...")
 
+	if c.Conn != nil {
+		// Send close message
+		message := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "client shutting down")
+		if err := c.Conn.WriteControl(websocket.CloseMessage, message, time.Now().Add(time.Second)); err != nil {
+			log.Warn().Err(err).Msg("error sending close message")
+		}
+
+		// Close the connection
+		if err := c.Conn.Close(); err != nil {
+			log.Warn().Err(err).Msg("error closing WebSocket connection")
+		}
+		c.Conn = nil
+	}
+
+	// Close channels safely
+	if c.OutgoingMessages != nil {
+		log.Debug().Msg("closing outgoing messages channel")
+		close(c.OutgoingMessages)
+		c.OutgoingMessages = nil
+	}
+
+	if c.IncomingMessages != nil {
+		log.Debug().Msg("closing incoming messages channel")
+		close(c.IncomingMessages)
+		c.IncomingMessages = nil
+	}
+
+	log.Debug().Msg("WebSocket client shutdown complete")
 }
 func NewDefaultClient(addr string) *DefaultWebSocketClient {
 
