@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/codingsandmore/pumpfun-portal/portal"
 	"github.com/codingsandmore/pumpfun-portal/portal/server"
@@ -17,7 +19,18 @@ func main() {
 
 	// Create server instance
 	srv := server.NewPortalServer()
-	defer srv.Shutdown()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Error().Err(err).Msg("failed to shutdown server")
+		}
+	}()
 
 	// Subscribe to specific token trades
 	tokenAddresses := []string{"2uoLkN6jWZsTvzYZkaG86Xjg4XQR8rcHUJp9gCP7pump"}
@@ -40,10 +53,6 @@ func main() {
 	*/
 
 	// Wait for interrupt signal to gracefully shut down
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-
-	// Block until we receive a signal
-	<-sigs
+	<-ctx.Done()
 	log.Info().Msg("shutting down...")
 }

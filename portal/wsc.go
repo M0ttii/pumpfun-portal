@@ -1,6 +1,7 @@
 package portal
 
 import (
+	"context"
 	"errors"
 	"net/url"
 	"time"
@@ -16,7 +17,7 @@ type WebSocketClient interface {
 	Connect() error
 	Send(any)
 	Subscribe(messasge chan any, decoder MessageDecoder, welcomeMessage any) error
-	Shutdown()
+	Shutdown(context.Context) error
 }
 type DefaultWebSocketClient struct {
 	Addr             string
@@ -27,24 +28,25 @@ type DefaultWebSocketClient struct {
 	welcomeMessage   any
 }
 
-func (c *DefaultWebSocketClient) Shutdown() {
+func (c *DefaultWebSocketClient) Shutdown(ctx context.Context) error {
 	log.Debug().Msg("shutting down WebSocket client...")
 
 	if c.Conn != nil {
-		// Send close message
-		message := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "client shutting down")
-		if err := c.Conn.WriteControl(websocket.CloseMessage, message, time.Now().Add(time.Second)); err != nil {
-			log.Warn().Err(err).Msg("error sending close message")
+
+		if err := c.Conn.WriteControl(
+			websocket.CloseMessage,
+			websocket.FormatCloseMessage(websocket.CloseNormalClosure, ""),
+			time.Now().Add(5*time.Second),
+		); err != nil && !websocket.IsUnexpectedCloseError(err) {
+			return err
 		}
 
-		// Close the connection
 		if err := c.Conn.Close(); err != nil {
 			log.Warn().Err(err).Msg("error closing WebSocket connection")
 		}
 		c.Conn = nil
 	}
 
-	// Close channels safely
 	if c.OutgoingMessages != nil {
 		log.Debug().Msg("closing outgoing messages channel")
 		close(c.OutgoingMessages)
@@ -58,6 +60,7 @@ func (c *DefaultWebSocketClient) Shutdown() {
 	}
 
 	log.Debug().Msg("WebSocket client shutdown complete")
+	return nil
 }
 func NewDefaultClient(addr string) *DefaultWebSocketClient {
 

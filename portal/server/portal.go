@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"time"
 
 	"github.com/codingsandmore/pumpfun-portal/portal"
@@ -34,36 +35,53 @@ func NewPortalServer() *PortalServer {
 }
 
 // Shutdown closes all connections and channels
-func (s *PortalServer) Shutdown() {
+func (s *PortalServer) Shutdown(ctx context.Context) error {
 	log.Info().Msg("shutting down portal server...")
 
+	done := make(chan struct{})
+	var shutdownErr error
+
 	// First stop any ongoing subscriptions
-	if s.tracker != nil && s.tracker.Client != nil {
-		log.Debug().Msg("shutting down tracker client...")
-		s.tracker.Client = nil
-	}
+	go func() {
+		defer close(done)
 
-	// Then close the WebSocket client
-	if s.client != nil {
-		log.Debug().Msg("shutting down WebSocket client...")
-		s.client.Shutdown()
-		s.client = nil
-	}
+		// First stop any ongoing subscriptions
+		if s.tracker != nil && s.tracker.Client != nil {
+			log.Debug().Msg("shutting down tracker client...")
+			s.tracker.Client = nil
+		}
 
-	// Finally close channels
-	if s.pairs != nil {
-		log.Debug().Msg("closing pairs channel...")
-		close(s.pairs)
-		s.pairs = nil
-	}
+		// Then close the WebSocket client if it exists
+		if s.client != nil {
+			log.Debug().Msg("shutting down WebSocket client...")
+			if err := s.client.Shutdown(context.Background()); err != nil {
+				shutdownErr = err
+			}
+			s.client = nil
+		}
 
-	if s.trades != nil {
-		log.Debug().Msg("closing trades channel...")
-		close(s.trades)
-		s.trades = nil
-	}
+		// Finally close channels
+		if s.pairs != nil {
+			log.Debug().Msg("closing pairs channel...")
+			close(s.pairs)
+			s.pairs = nil
+		}
 
-	log.Info().Msg("portal server shutdown complete")
+		if s.trades != nil {
+			log.Debug().Msg("closing trades channel...")
+			close(s.trades)
+			s.trades = nil
+		}
+	}()
+
+	select {
+	case <-ctx.Done():
+		log.Warn().Msg("shutdown timed out, forcing exit")
+		return ctx.Err()
+	case <-done:
+		log.Info().Msg("portal server shutdown complete")
+		return shutdownErr
+	}
 }
 
 // TradeHandler is a function type that handles trade notifications
@@ -84,16 +102,15 @@ func (s *PortalServer) SubscribeToTokenTrades(tokenAddresses []string, handler T
 
 	// Initialize the trades channel if not already done
 	if s.trades == nil {
-		s.trades = make(chan *portal.NewTradeResponse, 100) // Buffered channel to prevent blocking
+		s.trades = make(chan *portal.NewTradeResponse, 100)
 	}
 
-	// Make sure we're connected BEFORE subscribing or sending messages
+	// Make sure we're connected before subscribing or sending messages
 	if err := s.client.Connect(); err != nil {
 		log.Error().Err(err).Msg("failed to connect client")
 		return err
 	}
 
-	// Wait a moment for the connection to stabilize
 	time.Sleep(500 * time.Millisecond)
 
 	// Initialize the tracker's client
@@ -101,13 +118,13 @@ func (s *PortalServer) SubscribeToTokenTrades(tokenAddresses []string, handler T
 		s.tracker.Client = s.client
 	}
 
-	// Set up trade subscription if not already done
+	// Set up trade subscription
 	if s.tracker.Client != nil && s.trades != nil {
-		// Start the trade tracker if not already started
+		// Start the trade tracker
 		go func() {
-			// Create a channel for trades in the client
+			// channel for trades in the client
 			tradesChan := make(chan any, 100)
-			
+
 			// Subscribe to trades with a decoder
 			err := s.client.Subscribe(tradesChan, &decoders.TradeDecoder{}, nil)
 			if err != nil {
@@ -115,7 +132,7 @@ func (s *PortalServer) SubscribeToTokenTrades(tokenAddresses []string, handler T
 				return
 			}
 			log.Info().Msg("successfully subscribed to trade decoder")
-			
+
 			// Forward decoded trades to the tracker
 			for m := range tradesChan {
 				if trade, ok := m.(*portal.NewTradeResponse); ok && trade != nil {
@@ -140,10 +157,10 @@ func (s *PortalServer) SubscribeToTokenTrades(tokenAddresses []string, handler T
 
 	// For each token, create a minimal pair and track it
 	for _, tokenAddr := range tokenAddresses {
-		// Create a minimal pair with just the mint address
+
 		pair := &portal.NewPairResponse{
 			Mint:      tokenAddr,
-			Signature: "manual_subscription", // Add a non-empty signature
+			Signature: "manual_subscription",
 		}
 
 		// Track the pair for trades
